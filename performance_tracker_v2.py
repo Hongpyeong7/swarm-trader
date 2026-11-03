@@ -21,7 +21,7 @@ import logging
 import math
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -39,6 +39,7 @@ logging.basicConfig(
 log = logging.getLogger("perf_v2")
 
 API_BASE = "https://paper-api.alpaca.markets/v2"
+DATA_BASE = "https://data.alpaca.markets/v2"
 ALPACA_HEADERS = {
     "APCA-API-KEY-ID": os.environ.get("ALPACA_API_KEY", ""),
     "APCA-API-SECRET-KEY": os.environ.get("ALPACA_API_SECRET", ""),
@@ -78,6 +79,48 @@ def get_portfolio() -> dict:
         "daily_pnl_pct": daily_pnl_pct,
         "daily_pnl": equity - last_equity,
     }
+
+
+def get_alpaca_daily_closes(symbol: str, days: int = 10) -> list[tuple[str, float]]:
+    """Daily (date, close) bars from Alpaca market data, oldest first.
+
+    Tries the consolidated SIP feed first (free plans may read SIP data older
+    than 15 minutes), then falls back to IEX. Returns [] on failure.
+    """
+    end = (datetime.now(timezone.utc) - timedelta(minutes=16)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    start = (datetime.now(timezone.utc) - timedelta(days=days + 10)).strftime("%Y-%m-%d")
+    for feed in ("sip", "iex"):
+        try:
+            r = requests.get(
+                f"{DATA_BASE}/stocks/{symbol}/bars",
+                params={"timeframe": "1Day", "start": start, "end": end,
+                        "feed": feed, "adjustment": "all", "limit": 1000},
+                headers=ALPACA_HEADERS, timeout=10,
+            )
+            r.raise_for_status()
+            bars = r.json().get("bars") or []
+            if bars:
+                return [(b["t"][:10], float(b["c"])) for b in bars]
+        except Exception as e:
+            log.info(f"Alpaca {feed} bars for {symbol} unavailable: {e}")
+    return []
+
+
+def _benchmark_close_and_daily(symbol: str) -> tuple[float | None, float | None]:
+    """Latest close and 1-day return for a benchmark: Alpaca first, yfinance fallback."""
+    bars = get_alpaca_daily_closes(symbol)
+    if len(bars) >= 2:
+        prev, curr = bars[-2][1], bars[-1][1]
+        return curr, (curr - prev) / prev if prev else None
+    try:
+        hist = yf.Ticker(symbol).history(period="5d", interval="1d")
+        if not hist.empty:
+            curr = float(hist["Close"].iloc[-1])
+            prev = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else None
+            return curr, (curr - prev) / prev if prev else None
+    except Exception as e:
+        log.warning(f"{symbol} fetch failed: {e}")
+    return None, None
 
 
 def get_benchmark_return(symbol: str, period_days: int = 1) -> float | None:
@@ -310,30 +353,8 @@ def take_snapshot(force: bool = False) -> dict | None:
         log.error(f"Failed to fetch portfolio: {e}")
         return None
 
-    spy_price = None
-    qqq_price = None
-    spy_daily = None
-    qqq_daily = None
-
-    try:
-        spy_ticker = yf.Ticker("SPY")
-        spy_hist = spy_ticker.history(period="2d", interval="1d")
-        if not spy_hist.empty:
-            spy_price = float(spy_hist["Close"].iloc[-1])
-            if len(spy_hist) >= 2:
-                spy_daily = (spy_price - float(spy_hist["Close"].iloc[-2])) / float(spy_hist["Close"].iloc[-2])
-    except Exception as e:
-        log.warning(f"SPY fetch failed: {e}")
-
-    try:
-        qqq_ticker = yf.Ticker("QQQ")
-        qqq_hist = qqq_ticker.history(period="2d", interval="1d")
-        if not qqq_hist.empty:
-            qqq_price = float(qqq_hist["Close"].iloc[-1])
-            if len(qqq_hist) >= 2:
-                qqq_daily = (qqq_price - float(qqq_hist["Close"].iloc[-2])) / float(qqq_hist["Close"].iloc[-2])
-    except Exception as e:
-        log.warning(f"QQQ fetch failed: {e}")
+    spy_price, spy_daily = _benchmark_close_and_daily("SPY")
+    qqq_price, qqq_daily = _benchmark_close_and_daily("QQQ")
 
     snapshot = {
         "date": today,
@@ -355,8 +376,8 @@ def take_snapshot(force: bool = False) -> dict | None:
 
     log.info(
         f"Snapshot saved: equity=${portfolio['equity']:,.2f}, "
-        f"SPY=${spy_price:.2f}, " if spy_price else "SPY=N/A, "
-        f"QQQ=${qqq_price:.2f}" if qqq_price else "QQQ=N/A"
+        + (f"SPY=${spy_price:.2f}, " if spy_price else "SPY=N/A, ")
+        + (f"QQQ=${qqq_price:.2f}" if qqq_price else "QQQ=N/A")
     )
     return snapshot
 

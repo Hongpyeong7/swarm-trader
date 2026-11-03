@@ -99,6 +99,10 @@ def get_account_for_mode(mode: str = None) -> AlpacaAccount:
     if "day" in _ACCOUNTS:
         return _ACCOUNTS["day"]
 
+    # Fallback: if day account isn't configured, share the primary (swing) account
+    if "swing" in _ACCOUNTS:
+        return _ACCOUNTS["swing"]
+
     raise ValueError(
         f"No Alpaca account configured for mode '{mode}'. "
         "Check ALPACA_API_KEY / ALPACA_SWING_API_KEY in .env"

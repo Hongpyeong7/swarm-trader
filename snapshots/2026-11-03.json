@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-03",
+  "timestamp": "2026-11-03T14:44:37.004496",
+  "equity": 100000.0,
+  "cash": 100000.0,
+  "invested": 0.0,
+  "position_count": 0,
+  "daily_pnl": 0.0,
+  "daily_pnl_pct": 0.0,
+  "spy_price": 754.04,
+  "spy_daily_pct": 0.2579,
+  "qqq_price": 686.51,
+  "qqq_daily_pct": 0.7958
+}
